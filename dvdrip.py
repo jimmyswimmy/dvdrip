@@ -324,13 +324,15 @@ class DVD:
                 check_err(args)
 
     def ScanTitle(self, i):
-        for line in check_err([
+        response =  check_err([
             HANDBRAKE,
             #'--no-dvdnav', # TODO: turn this on as a fallback
             '--scan',
             '--title', str(i),
             '-i',
-            self.mountpoint], stdout=subprocess.PIPE).split(os.linesep):
+            self.mountpoint], stdout=subprocess.PIPE)
+        response = response.replace('%', '\n')
+        for line in response.split(os.linesep):
                 if self.verbose:
                         print('< %s' % line.rstrip())
                 yield line
