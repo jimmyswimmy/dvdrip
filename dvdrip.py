@@ -110,6 +110,17 @@ Using it, Step 2:
   there are multiple files, they will be placed in a new directory called
   Output_Name.
 
+Using it, for me:
+
+  If I want to split a series DVD/BD, execute:
+
+  ./dvdrip.py --series -N SERIES_NAME_TO_NAME_FILE --season 3 -t '*' -m 15 -M 25 -i /dev/sr1 -o /mnt/Desktop/directory/S3
+
+  This will rip a series, give the files names like SERIES_NAME_TO_NAME_FILE_-_S03E0x_-_.mp4
+  It will ignore titles shorter than (here) 15 minutes, or longer than (here) 25 minutes.
+  It will sequentially name files in the output directory, so BE CAREFUL TO FOLLOW DISC ORDER
+    (otherwise you'll have files out of order and will have to carefully rename things, or start over)
+
 Limitations:
 
   This script has been tested on both Linux and Mac OS X with Python 3,
@@ -266,7 +277,7 @@ def only(iterable):
     return result
 
 Title = namedtuple('Title', ['number', 'info'])
-Task = namedtuple('Task', ['title', 'chapter'])
+Task = namedtuple('Task', ['title', 'chapter', 'taskIndex'])
 
 TOTAL_EJECT_SECONDS = 5
 EJECT_ATTEMPTS_PER_SECOND = 10
@@ -293,7 +304,7 @@ class DVD:
         args = [
             HANDBRAKE,
             '--title', str(task.title.number),
-            '--preset', "Production Standard",
+            '--preset', "Fast 720p30",
             '--encoder', 'x264',
             '--audio', ','.join(audio_tracks),
             '--aencoder', ','.join(audio_encoders),
@@ -423,13 +434,15 @@ def FindMainFeature(titles, verbose=False):
         print()
 
 def ConstructTasks(titles, chapter_split):
+    taskIndex = 0
     for title in titles:
         num_chapters = len(title.info['chapters'])
         if chapter_split and num_chapters > 1:
             for chapter in range(1, num_chapters + 1):
-                yield Task(title, chapter)
+                yield Task(title, chapter, taskIndex)
         else:
-            yield Task(title, None)
+            taskIndex += 1
+            yield Task(title, None, taskIndex)
 
 def TaskFilenames(tasks, output, dry_run=False):
     if (len(tasks) > 1):
@@ -442,11 +455,40 @@ def TaskFilenames(tasks, output, dry_run=False):
                         'Title%02d_%02d.mp4'
                         % (task.title.number, task.chapter))
         if not dry_run:
-            os.makedirs(output)
+            if not os.path.exists(output):
+                os.makedirs(output)
     else:
         def ComputeFileName(task):
             return '%s.mp4' % output
     result = [ComputeFileName(task) for task in tasks]
+    if len(set(result)) != len(result):
+        raise UserError("multiple tasks use same filename")
+    return result
+
+def TaskFilenamesSeries(tasks, output, seriesName='Title', season=None, separator='_-_', dry_run=False):
+    # find index of last file in current directory
+    try:
+        # if there are files
+        existingFiles = os.listdir(output)
+        existingFiles.sort()
+        # gets the last two characters between the _-_ e.g. S03E02
+        lastIndex = int(existingFiles[-1].split(separator)[1][-2:])
+    except:
+        # if there aren't. Or if something breaks, this will be a file-tastrophe
+        lastIndex = 0
+
+    result = []
+    for task in tasks:
+        currentIndex = task.taskIndex + lastIndex
+        thisFilename = seriesName + separator + 'S%02dE%02d' % (season, currentIndex)
+        thisFilename += separator + '.mp4'
+        thisResult = os.path.join(output, thisFilename)
+        result.append(thisResult)
+
+    if not dry_run:
+        if not os.path.exists(output):
+            os.makedirs(output)
+
     if len(set(result)) != len(result):
         raise UserError("multiple tasks use same filename")
     return result
@@ -456,8 +498,8 @@ def PerformTasks(dvd, tasks, title_count, filenames,
     for task, filename in zip(tasks, filenames):
         print('=' * 78)
         if task.chapter is None:
-            print('Title %s / %s => %r'
-                    % (task.title.number, title_count, filename))
+            print('Title %s: %s/%s => %r'
+                    % (task.title.number, task.taskIndex, title_count, filename))
         else:
             num_chapters = len(task.title.info['chapters'])
             print('Title %s / %s , Chapter %s / %s=> %r'
@@ -496,6 +538,9 @@ class Duration(namedtuple('Duration', 'hours minutes seconds')):
 
     def in_seconds(self):
         return 60 * (60 * self.hours + self.minutes) + self.seconds
+
+    def in_minutes(self):
+        return 60 * self.hours + self.minutes + self.seconds / 60
 
 def ExtractDuration(s):
     return Duration(*map(int, DURATION_REGEX.match(s).groups()))
@@ -620,6 +665,27 @@ def ParseArgs():
             default=15,
             help="Amount of time to wait for a mountpoint to be mounted",
             type=float)
+    parser.add_argument('-S', '--series',
+            action='store_true',
+            help="""Write out into sequential filenames of format S03E03,
+            assumes discs are inserted in order!""")
+    parser.add_argument('--season',
+            default=None,
+            help='Season number, as integer, if part of a series, must be used with --series',
+            type=int)
+    parser.add_argument('-N', '--seriesName',
+            action='store',
+            help='Provide series name for file naming, must be used with --series',
+            type=str)
+    parser.add_argument('-m', '--episodeMinimumLength',
+            default=1,
+            help="Minimum episode length for ripping, in minutes",
+            type=int)
+    parser.add_argument('-M', '--episodeMaximumLength',
+            default=10000000,
+            help="Maximum episode length for ripping, in minutes",
+            type=int)
+
     args = parser.parse_args()
     if not args.scan and args.output is None:
         raise UserError("output argument is required")
@@ -657,14 +723,31 @@ def main():
     dvd = DVD(args.input, args.verbose, args.mount_timeout)
     print('Reading from %r' % dvd.mountpoint)
     title_numbers = parse_titles_arg(args.titles)
-    titles = tuple(dvd.ScanTitles(title_numbers, args.verbose))
-
+    titles = list(dvd.ScanTitles(title_numbers, args.verbose))
+    
     if args.scan:
         DisplayScan(titles)
     else:
         if args.main_feature and len(titles) > 1:
             # TODO: make this affect scan as well
             titles = [FindMainFeature(titles, args.verbose)]
+
+        # strip too long or too short titles
+        if ((args.episodeMinimumLength is not None) and
+            (args.episodeMaximumLength is not None)):
+            workingTitles = []
+            # find titles in between
+            for title in titles:
+                titleMinutes = title.info['duration'].in_minutes()
+                if titleMinutes < args.episodeMinimumLength:
+                    print('Dropping title %d, too short.' % title.number)
+                elif titleMinutes > args.episodeMaximumLength:
+                    print('Dropping title %d, too long.' % title.number)
+                else:
+                    # the ones we keep
+                    workingTitles.append(title)
+            # put the ones we want, back in the titles
+            titles = workingTitles
 
         if not titles:
             raise UserError("No titles to rip")
@@ -673,8 +756,10 @@ def main():
                 raise UserError("No output specified")
             print('Writing to %r' % args.output)
             tasks = tuple(ConstructTasks(titles, args.chapter_split))
-
-            filenames = TaskFilenames(tasks, args.output, dry_run=args.dry_run)
+            if args.series:
+                filenames = TaskFilenamesSeries(tasks, args.output, seriesName=args.seriesName, season=args.season, dry_run=args.dry_run)
+            else:
+                filenames = TaskFilenames(tasks, args.output, dry_run=args.dry_run)
             # Don't stomp on existing files
             for filename in filenames:
                 if os.path.exists(filename):
