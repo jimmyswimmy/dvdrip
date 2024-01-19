@@ -433,6 +433,23 @@ def FindMainFeature(titles, verbose=False):
         print('Selected %r as main feature.' % main_feature.number)
         print()
 
+def FindTitlesInLengthRange(titles, args):
+    workingTitles = []
+    # find titles in between
+    for title in titles:
+        titleMinutes = title.info['duration'].in_minutes()
+        if titleMinutes < args.episodeMinimumLength:
+            print('Dropping title %d, too short.' % title.number)
+        elif titleMinutes > args.episodeMaximumLength:
+            print('Dropping title %d, too long.' % title.number)
+        else:
+            # the ones we keep
+            print('Selecting title %d, length=%d minutes.' %( title.number, titleMinutes))
+            workingTitles.append(title)
+    # put the ones we want, back in the titles
+    print('Ripping %d titles on disc...' % len(workingTitles))
+    return workingTitles
+
 def ConstructTasks(titles, chapter_split):
     taskIndex = 0
     for title in titles:
@@ -735,19 +752,7 @@ def main():
         # strip too long or too short titles
         if ((args.episodeMinimumLength is not None) and
             (args.episodeMaximumLength is not None)):
-            workingTitles = []
-            # find titles in between
-            for title in titles:
-                titleMinutes = title.info['duration'].in_minutes()
-                if titleMinutes < args.episodeMinimumLength:
-                    print('Dropping title %d, too short.' % title.number)
-                elif titleMinutes > args.episodeMaximumLength:
-                    print('Dropping title %d, too long.' % title.number)
-                else:
-                    # the ones we keep
-                    workingTitles.append(title)
-            # put the ones we want, back in the titles
-            titles = workingTitles
+            titles = FindTitlesInLengthRange(titles, args)
 
         if not titles:
             raise UserError("No titles to rip")
